@@ -1,0 +1,152 @@
+#!/bin/bash
+progName="${0##*/}"
+
+function main()
+{
+    
+    confName=".${progName}.conf"
+    if [ -f  "${HOME}/${confName}" ]; then
+        source "${HOME}/${confName}" || die "$FUNCNAME"
+    else
+        confCreate || die "$FUNCNAME"
+    fi
+    
+    if [ -d "$scansPath" ]; then
+        for dir in ${scansPath}/*;do
+            endPath="${dir##*/}"
+            if [ -d "$scansPath/$endPath" ];then
+                if [ ! -z "$(ls $scansPath/$endPath)" ];then
+                    if getUserInfo "$endPath"; then
+                        sendMessage 
+                    fi
+                fi
+            fi
+        done
+    else
+        printELog "scansPath:\"${scansPath}\" could not be found enter a correct scansPath in config file!"
+        return 1
+    fi
+    return 0
+    }
+
+# This trims any white space at the beginning and end of a string:
+# Arguments: Required: $1=<The string to be trimmed>
+# Returns: 0 if success/string given, 1 if failed/no string given
+function f_trimStr()
+{
+    local stat=0
+    if [ "$#" -eq 1 ]; then
+        : "${1#"${1%%[![:space:]]*}"}" &&\
+        : "${_%"${_##*[![:space:]]}"}" &&\
+        printf '%s\n' "$_" || stat=1
+    else
+        stat=1
+    fi
+    return "$stat"
+}  # End of f_trimStr()
+function printILog() { echo "$1"; logger "${progName}: Info: ${1}"; }
+function printELog() { echo "$1" >&2; logger "${progName}: Error: ${1}"; }
+function die() { stat="$?"; printELog "Exit occured in \"$1\" fucntion"; exit "$stat"; }
+
+function confCreate(){
+local stat=0
+printILog "Config file does not exist one will be created for you.Fill out fields in config file and re-run program."
+if echo 'Ldap_User=""
+Ldap_User_Pass=""
+Ldap_Base_Dn=""
+Ldap_Server=""
+fromAddr=""
+subjectLine=""
+scansPath=""'>>"${HOME}/${confName}";then
+    printILog "Created @ ${HOME}/${confName}"
+else
+    printELog "Config file could not be created"
+    let stat++
+    return "$stat"
+fi
+    
+return "$stat"
+}
+
+function getUserInfo(){
+local stat=0
+end_of_path=$1
+echo "$end_of_path"
+unset userInfoArray
+
+   if ldapsearch -H "$Ldap_Server" -x -w"$Ldap_User_Pass" -LLL -D "$Ldap_User" -b "$Ldap_Base_Dn" "(result=this is just a place holder to test ldap connectivity)" >/dev/null 2>&1; then
+        if ldapRes=$(ldapsearch -H "$Ldap_Server" -x -w"$Ldap_User_Pass" -D "$Ldap_User" -b "$Ldap_Base_Dn" "sAMAccountName=${end_of_path}" "cn" "mail"| grep -E 'cn:|mail:'); then
+            while read line;do
+            
+                userInfoArray+=("$line")
+            done <<< ${ldapRes}
+        else
+            printELog "$end_of_path does not return anything from ldap query";
+            let stat++
+            return "$stat"
+        fi
+
+        if [ -n "{$userInfoArray[0]}" ]; then
+        userInfoArray[0]="${userInfoArray[0]##*:}"
+        userInfoArray[0]=$(f_trimStr "${userInfoArray[0]}" )
+        fi
+        if [ -n "${userInfoArray[1]}" ]; then
+        userInfoArray[1]="${userInfoArray[1]##*:}"
+        userInfoArray[1]=$(f_trimStr "${userInfoArray[1]}")
+        fi
+    else
+        printELog "Connection to LDAP server could not be established possible config file problem or ldapsearch command is not present"
+        let stat++
+        return "$stat"
+    fi
+
+return "$stat"
+}
+
+
+
+function emailMessage(){
+user="${userInfoArray[0]}";
+echo "From: ${fromAddr}
+Subject: ${subjectLine}
+Content-Type: text/html; charset="UTF-8"
+
+<html><head><title></title></head><body>
+<h2>Scans Folder Reminder</h2>
+<p>
+Hello ${user}, there are files pending deletion in your Scans folder in the H-drive.  If you want to keep the files (see below listing), please move them to a permanent location.
+</p>
+<h3>Scans File Listing</h3>
+<ul>
+$(while read filesPresent; do echo "<li>${filesPresent}</li>"; done <<<$(ls -1 "$scansPath/$endPath/"))
+</ul>
+<p>
+Sincerely, IT
+</p>
+</body></html>"
+return 0
+}
+
+function sendMessage()
+{ 
+local stat=0
+toAddr="${userInfoArray[1]}"
+if [[ "$toAddr" =~ ^.*@.*\..*$ ]];then
+    printILog "${toAddr} is a Valid Email."
+else
+    printELog "\"${toAddr}\" is a Invalid Email."
+    let stat++
+    return "$stat"
+fi
+   
+if emailMessage | sendmail -bm "$toAddr">/dev/null 2>&1;then
+    printILog "Message sent to ${toAddr}."
+else 
+    printELog "Message failed to send to ${toAddr}."
+    let stat++
+    return "$stat"
+fi
+return "$stat"
+}
+
+main
